@@ -1,40 +1,484 @@
---[[
-Full Featured "Generic Linux" (single file)
-- Auto-detects monitor (uses advanced monitor if present)
-- Touch + keyboard (WASD) support
-- Fancy boot logo & animation (paintutils-like drawing)
-- Multiple video animations (longer/more detailed)
-- Basic shell commands: ls, cat, help, neofetch, uptime
-- All drawn in-code (no wget)
--- Paste into a CC:Tweaked computer and run
--- Controls:
-   WASD = move selection, Enter = open, Backspace = return, Q = shutdown
-   Touch: tap icon to launch
--- Enjoy :)
-]]--
+-- Full Featured Generic Linux (cleaned & fixed)
+-- Single-file CC:Tweaked / ComputerCraft script
+-- Features:
+--  - auto-detects monitor (advanced) or falls back to term
+--  - touch + keyboard support (WASD navigation + Enter)
+--  - fancy boot logo + animation drawn with rects
+--  - multiple longer videos (paintutils-style frames)
+--  - basic shell commands: ls, cat, help, neofetch, uptime
+--  - single file, paste & run
 
--- -------------- Helpers: surface abstraction --------------
+-- ---------- Surface abstraction ----------
 local surface = {}
--- will be set to either monitor wrapper or term table
 local SUR = nil
 local SUR_NAME = "term"
 
--- try find a monitor peripheral (advanced) and use it
 local function findMonitor()
   if peripheral then
+    -- try peripheral.find first (if available)
+    if peripheral.find then
+      local ok, mon = pcall(peripheral.find, "monitor")
+      if ok and mon then return mon, "monitor" end
+    end
+    -- fallback: iterate names
     local names = peripheral.getNames and peripheral.getNames() or {}
     for _,n in ipairs(names) do
       local t = peripheral.getType and peripheral.getType(n) or nil
       if t == "monitor" then
         local mon = peripheral.wrap(n)
-        if mon then
-          return mon, n
-        end
+        if mon then return mon, n end
       end
     end
-    -- fallback: peripheral.find if available
-    if peripheral.find then
-      local ok, mon = pcall(peripheral.find, "monitor")
+  end
+  return nil, nil
+end
+
+local mon, monName = findMonitor()
+if mon then SUR = mon; SUR_NAME = monName or "monitor" else SUR = term; SUR_NAME = "term" end
+
+function surface.clear()
+  if SUR.clear then return SUR.clear() end
+  term.clear()
+end
+function surface.setCursor(x,y)
+  if SUR.setCursorPos then return SUR.setCursorPos(x,y) end
+  term.setCursorPos(x,y)
+end
+function surface.write(s)
+  if SUR.write then return SUR.write(s) end
+  term.write(s)
+end
+function surface.setBG(c)
+  if SUR.setBackgroundColor then return SUR.setBackgroundColor(c) end
+  term.setBackgroundColor(c)
+end
+function surface.setFG(c)
+  if SUR.setTextColor then return SUR.setTextColor(c) end
+  term.setTextColor(c)
+end
+function surface.getSize()
+  if SUR.getSize then return SUR.getSize() end
+  return term.getSize()
+end
+function surface.clearLine(row)
+  local w,h = surface.getSize()
+  surface.setBG(colors.black)
+  surface.setFG(colors.white)
+  surface.setCursor(1, row)
+  surface.write(string.rep(" ", w))
+  surface.setCursor(1, row)
+end
+
+-- ---------- Utility drawing ----------
+local function rect(x,y,w,h,color)
+  surface.setBG(color)
+  for j=0,h-1 do
+    surface.setCursor(x, y + j)
+    surface.write(string.rep(" ", w))
+  end
+end
+
+local function centerText(row, text)
+  local w,h = surface.getSize()
+  local x = math.floor((w - #text) / 2) + 1
+  surface.setCursor(x, row)
+  surface.write(text)
+end
+
+local function drawFrameGrid(frame, startX, startY)
+  local h = #frame
+  local w = (h > 0) and #frame[1] or 0
+  for y=1,h do
+    for x=1,w do
+      local c = frame[y][x] or colors.black
+      surface.setBG(c)
+      surface.setCursor(startX + x - 1, startY + y - 1)
+      surface.write(" ")
+    end
+  end
+end
+
+local function clamp(v,a,b) if v < a then return a end if v > b then return b end return v end
+
+-- ---------- Layout & apps ----------
+local W,H = surface.getSize()
+local ICON_W, ICON_H = 6, 4
+local ICON_GAP_X, ICON_GAP_Y = 4, 3
+local TOP_MARGIN = 4
+local LEFT_MARGIN = 4
+local APPS_PER_ROW = 6
+
+local apps = {
+  { id="terminal", name="Terminal", color=colors.gray },
+  { id="files", name="Files", color=colors.orange },
+  { id="video", name="Sunrise", color=colors.lightBlue },
+  { id="video2", name="Bounce", color=colors.blue },
+  { id="video3", name="Matrix", color=colors.purple },
+  { id="settings", name="Settings", color=colors.cyan },
+  { id="about", name="About", color=colors.lime },
+}
+local selected = 1
+
+local function layoutApps()
+  W,H = surface.getSize()
+  local positions = {}
+  for i=1,#apps do
+    local row = math.floor((i-1) / APPS_PER_ROW)
+    local col = (i-1) % APPS_PER_ROW
+    local x = LEFT_MARGIN + col * (ICON_W + ICON_GAP_X)
+    local y = TOP_MARGIN + row * (ICON_H + ICON_GAP_Y)
+    positions[i] = { x=x, y=y }
+  end
+  return positions
+end
+
+local appPositions = layoutApps()
+
+local function hasTouch()
+  return SUR_NAME ~= "term"
+end
+
+-- ---------- Boot logo & animation ----------
+local function drawLogoBig(sx, sy)
+  local grid = {
+    {0,0,colors.lime,colors.lime,0,0},
+    {0,colors.lime,colors.green,colors.green,colors.lime,0},
+    {colors.lime,colors.green,colors.lime,colors.lime,colors.green,colors.lime},
+    {colors.lime,colors.green,colors.lime,colors.lime,colors.green,colors.lime},
+    {0,colors.lime,colors.green,colors.green,colors.lime,0},
+    {0,0,colors.lime,colors.lime,0,0},
+  }
+  local frame = {}
+  for y=1,#grid do
+    frame[y] = {}
+    for x=1,#grid[y] do frame[y][x] = grid[y][x] end
+  end
+  drawFrameGrid(frame, sx, sy)
+end
+
+local function bootSequence()
+  surface.clear()
+  W,H = surface.getSize()
+  local barY = math.floor(H/2)
+  for i=1,W do
+    rect(1, barY, W, 1, colors.black)
+    rect(1, barY, i, 1, colors.green)
+    centerText(barY - 2, "Initializing Generic Linux...")
+    os.sleep(0.02)
+  end
+  local logoW, logoH = 6, 6
+  local sx = math.floor((W - logoW) / 2) + 1
+  local sy = barY - 8
+  drawLogoBig(sx, sy)
+  centerText(sy + logoH + 1, "Generic Linux")
+  centerText(sy + logoH + 2, "Mint-ish CC Edition")
+  os.sleep(1.0)
+end
+
+-- ---------- Desktop drawing ----------
+local function drawTopBar()
+  surface.setBG(colors.black)
+  surface.setFG(colors.white)
+  surface.clearLine(1)
+  surface.setCursor(2,1)
+  surface.write(" Generic Linux (Lua) - "..(hasTouch() and "Touch+KB" or "KB only"))
+  local timeStr = os.date("%Y-%m-%d %H:%M:%S")
+  surface.setCursor(W - #timeStr - 1, 1)
+  surface.write(timeStr)
+end
+
+local function drawBottomBar()
+  surface.setBG(colors.black)
+  surface.setFG(colors.white)
+  surface.clearLine(H)
+  surface.setCursor(2, H)
+  surface.write(" WASD Move | Enter Open | Backspace Return | Q Quit ")
+end
+
+local function drawAppIcon(i, isSel)
+  local pos = appPositions[i]
+  local a = apps[i]
+  local base = a.color or colors.gray
+  local selBg = colors.lightGray
+  rect(pos.x, pos.y, ICON_W, ICON_H, isSel and selBg or base)
+  rect(pos.x + 1, pos.y + 1, ICON_W - 2, ICON_H - 2, colors.white)
+  local label = a.name
+  surface.setBG(colors.black)
+  surface.setFG(isSel and colors.green or colors.white)
+  surface.setCursor(pos.x, pos.y + ICON_H)
+  surface.write(label:sub(1, ICON_W + 1))
+end
+
+local function drawDesktop()
+  W,H = surface.getSize()
+  surface.clear()
+  drawTopBar()
+  drawBottomBar()
+  appPositions = layoutApps()
+  for i=1,#apps do drawAppIcon(i, i == selected) end
+end
+
+-- ---------- Video animations ----------
+local function sunriseFrame(width, height, phase)
+  local frame = {}
+  for y=1,height do
+    frame[y] = {}
+    for x=1,width do
+      if y <= math.floor(height * 0.35) then
+        frame[y][x] = colors.lightBlue
+      elseif y <= math.floor(height * 0.6) then
+        frame[y][x] = colors.blue
+      elseif y <= math.floor(height * 0.8) then
+        frame[y][x] = colors.orange
+      else
+        frame[y][x] = colors.yellow
+      end
+    end
+  end
+  -- draw a sun circle moving with phase
+  local cx = math.floor(width * (phase / 60)) + 1
+  local cy = math.floor(height * 0.45)
+  for dy = -1,1 do
+    for dx = -2,2 do
+      local px = clamp(cx + dx, 1, width)
+      local py = clamp(cy + dy, 1, height)
+      frame[py][px] = colors.yellow
+    end
+  end
+  return frame
+end
+
+local function video_sunrise()
+  local width = math.min(40, W - 8)
+  local height = math.min(12, H - 8)
+  local sx = math.floor((W - width) / 2) + 1
+  local sy = math.floor((H - height) / 2) + 1
+  for phase = 0, 80 do
+    local f = sunriseFrame(width, height, phase)
+    drawFrameGrid(f, sx, sy)
+    centerText(sy + height + 1, "Sunrise - Backspace to stop")
+    local timer = os.startTimer(0.11)
+    while true do
+      local ev, a, b, c = os.pullEvent()
+      if ev == "timer" and a == timer then break end
+      if ev == "key" and a == keys.backspace then return end
+      if ev == "monitor_touch" then return end
+      if ev == "mouse_click" then return end
+    end
+  end
+end
+
+local function video_bounce()
+  local width = math.min(36, W - 8)
+  local height = math.min(10, H - 8)
+  local sx = math.floor((W - width) / 2) + 1
+  local sy = math.floor((H - height) / 2) + 1
+  local x, y = 1, 1
+  local dx, dy = 1, 1
+  for t = 1, 260 do
+    rect(sx, sy, width, height, colors.black)
+    local colorcycle = {colors.red, colors.orange, colors.yellow, colors.lime, colors.green, colors.lightBlue, colors.purple}
+    local color = colorcycle[(t % #colorcycle) + 1]
+    rect(sx + x - 1, sy + y - 1, 4, 2, color)
+    centerText(sy + height + 1, "Bounce - Backspace to stop")
+    local timer = os.startTimer(0.07)
+    while true do
+      local ev, a, b, c = os.pullEvent()
+      if ev == "timer" and a == timer then break end
+      if ev == "key" and a == keys.backspace then return end
+      if ev == "monitor_touch" then return end
+      if ev == "mouse_click" then return end
+    end
+    x = x + dx
+    y = y + dy
+    if x <= 1 or x >= width - 3 then dx = -dx end
+    if y <= 1 or y >= height - 1 then dy = -dy end
+  end
+end
+
+local function video_matrix()
+  local width = math.min(48, W - 6)
+  local height = math.min(14, H - 6)
+  local sx = math.floor((W - width) / 2) + 1
+  local sy = math.floor((H - height) / 2) + 1
+  local cols = {}
+  for i=1,width do cols[i] = {pos = math.random(1,height), speed = 1 + math.random(2)} end
+  for t=1, 360 do
+    rect(sx, sy, width, height, colors.black)
+    for i=1,width do
+      local c = cols[i]
+      c.pos = c.pos + c.speed
+      if c.pos > height then c.pos = 1 end
+      for k=0,3 do
+        local py = ((c.pos - k - 1) % height) + 1
+        local color = (k == 0) and colors.lime or colors.green
+        surface.setBG(color)
+        surface.setCursor(sx + i - 1, sy + py - 1)
+        surface.write(" ")
+      end
+    end
+    centerText(sy + height + 1, "Matrix - Backspace to stop")
+    local timer = os.startTimer(0.06)
+    while true do
+      local ev, a, b, c = os.pullEvent()
+      if ev == "timer" and a == timer then break end
+      if ev == "key" and a == keys.backspace then return end
+      if ev == "monitor_touch" then return end
+      if ev == "mouse_click" then return end
+    end
+  end
+end
+
+local function playVideo(id)
+  if id == "video" then video_sunrise()
+  elseif id == "video2" then video_bounce()
+  elseif id == "video3" then video_matrix()
+  end
+end
+
+-- ---------- Simple shell ----------
+local function runShell()
+  surface.clear()
+  surface.setBG(colors.black); surface.setFG(colors.white)
+  centerText(2, "Generic Shell - type 'help' (exit to return)")
+  local start = os.time()
+  while true do
+    surface.setFG(colors.green); surface.setBG(colors.black)
+    surface.write("$ ")
+    surface.setFG(colors.white)
+    local line = read()
+    if not line then break end
+    line = line:match("^%s*(.-)%s*$")
+    if line == "" then
+    elseif line == "exit" then break
+    elseif line == "help" then
+      print("Commands: help, ls, cat <file>, neofetch, uptime, exit")
+    elseif line == "ls" then
+      for _,f in ipairs(fs.list("/")) do print(f) end
+    elseif line:sub(1,4) == "cat " then
+      local fname = line:sub(5)
+      if fs.exists(fname) then
+        local fh = fs.open(fname, "r")
+        if fh then print(fh.readAll()); fh.close() else print("Unable to open "..fname) end
+      else print("No such file: "..fname)
+      end
+    elseif line == "neofetch" then
+      print("Generic Linux (Lua) - Neofetch-ish")
+      print("Shell: generic-shell")
+      print("Uptime: "..(os.time() - start).."s")
+    elseif line == "uptime" then
+      print("Uptime: "..(os.time() - start).."s")
+    else
+      print("command not found: "..line)
+    end
+  end
+end
+
+-- ---------- Launch apps ----------
+local function launchAppByIndex(i)
+  local a = apps[i]
+  if not a then return end
+  surface.clear()
+  if a.id == "terminal" then
+    runShell()
+  elseif a.id == "files" then
+    surface.setBG(colors.black); surface.setFG(colors.white)
+    centerText(2, "Files - Root listing (Backspace to return)")
+    local y = 4
+    for _,f in ipairs(fs.list("/")) do
+      surface.setCursor(4,y); surface.write(" - "..f); y = y + 1
+      if y >= H - 2 then break end
+    end
+    while true do
+      local ev, k = os.pullEvent()
+      if ev == "key" and k == keys.backspace then break end
+      if ev == "monitor_touch" then break end
+    end
+  elseif a.id:sub(1,5) == "video" then
+    playVideo(a.id)
+  elseif a.id == "settings" then
+    surface.setBG(colors.black); surface.setFG(colors.white)
+    centerText(2, "Settings (fake)")
+    centerText(4, "Theme: Mint-ish")
+    centerText(6, "Input: "..(hasTouch() and "Touch + Keyboard" or "Keyboard"))
+    centerText(H-2, "Press Backspace to return")
+    while true do
+      local ev, k = os.pullEvent()
+      if ev == "key" and k == keys.backspace then break end
+      if ev == "monitor_touch" then break end
+    end
+  elseif a.id == "about" then
+    surface.setBG(colors.black); surface.setFG(colors.white)
+    centerText(2, "About Generic Linux")
+    centerText(4, "Lua-based demo OS for CC")
+    centerText(6, "Made for vibes")
+    centerText(H-2, "Press Backspace to return")
+    while true do
+      local ev, k = os.pullEvent()
+      if ev == "key" and k == keys.backspace then break end
+      if ev == "monitor_touch" then break end
+    end
+  end
+end
+
+-- ---------- Touch mapping ----------
+local function appAtPos(mx, my)
+  for i,pos in ipairs(appPositions) do
+    local x1,y1 = pos.x, pos.y
+    local x2,y2 = x1 + ICON_W - 1, y1 + ICON_H - 1
+    if mx >= x1 and mx <= x2 and my >= y1 and my <= y2 then return i end
+    if my == y2 + 1 and mx >= x1 and mx <= x1 + ICON_W then return i end
+  end
+  return nil
+end
+
+-- ---------- Main desktop loop ----------
+local running = true
+local function desktopLoop()
+  drawDesktop()
+  while running do
+    local ev, a, b, c = os.pullEvent()
+    if ev == "key" then
+      local key = a
+      if key == keys.q then running = false; break end
+      if key == keys.w then selected = clamp(selected - 1, 1, #apps) end
+      if key == keys.s then selected = clamp(selected + 1, 1, #apps) end
+      if key == keys.a then selected = clamp(selected - 1, 1, #apps) end
+      if key == keys.d then selected = clamp(selected + 1, 1, #apps) end
+      if key == keys.enter then
+        launchAppByIndex(selected)
+        drawDesktop()
+      end
+      for i=1,#apps do drawAppIcon(i, i == selected) end
+    elseif ev == "monitor_touch" then
+      local side, mx, my = a, b, c
+      local idx = appAtPos(mx, my)
+      if idx then launchAppByIndex(idx); drawDesktop() end
+    elseif ev == "mouse_click" then
+      local button, mx, my = a, b, c
+      local idx = appAtPos(mx, my)
+      if idx then launchAppByIndex(idx); drawDesktop() end
+    elseif ev == "term_resize" or ev == "monitor_resize" then
+      W,H = surface.getSize()
+      appPositions = layoutApps()
+      drawDesktop()
+    end
+  end
+end
+
+-- ---------- Shutdown ----------
+local function shutdown()
+  surface.clear()
+  centerText(math.floor(H/2), "Shutting down... cya")
+  os.sleep(1)
+  surface.clear()
+end
+
+-- ---------- Main ----------
+bootSequence()
+drawDesktop()
+desktopLoop()
+shutdown()      local ok, mon = pcall(peripheral.find, "monitor")
       if ok and mon then return mon, "monitor" end
     end
   end
